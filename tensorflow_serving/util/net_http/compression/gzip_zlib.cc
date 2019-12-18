@@ -18,15 +18,13 @@ limitations under the License.
 #include "tensorflow_serving/util/net_http/compression/gzip_zlib.h"
 
 #include <algorithm>
-
 #include <cassert>
 #include <cstring>
-
 #include <memory>
 
 #include "absl/base/casts.h"
-#include "absl/base/internal/raw_logging.h"
 #include "absl/base/macros.h"
+#include "tensorflow_serving/util/net_http/internal/net_logging.h"
 
 namespace tensorflow {
 namespace serving {
@@ -430,11 +428,6 @@ int ZLib::CompressChunkOrAll(Bytef *dest, uLongf *destLen, const Bytef *source,
   return ret;
 }
 
-int ZLib::CompressChunk(Bytef *dest, uLongf *destLen, const Bytef *source,
-                        uLong sourceLen) {
-  return CompressChunkOrAll(dest, destLen, source, sourceLen, Z_SYNC_FLUSH);
-}
-
 int ZLib::CompressAtMost(Bytef *dest, uLongf *destLen, const Bytef *source,
                          uLong *sourceLen) {
   return CompressAtMostOrAll(dest, destLen, source, sourceLen, Z_SYNC_FLUSH);
@@ -555,7 +548,7 @@ int ZLib::UncompressInit(Bytef *dest, uLongf *destLen, const Bytef *source,
 
 // If you compressed your data a chunk at a time, with CompressChunk,
 // you can uncompress it a chunk at a time with UncompressChunk.
-// Only difference bewteen chunked and unchunked uncompression
+// Only difference between chunked and unchunked uncompression
 // is the flush mode we use: Z_SYNC_FLUSH (chunked) or Z_FINISH (unchunked).
 int ZLib::UncompressAtMostOrAll(Bytef *dest, uLongf *destLen,
                                 const Bytef *source, uLong *sourceLen,
@@ -586,8 +579,7 @@ int ZLib::UncompressAtMostOrAll(Bytef *dest, uLongf *destLen,
         crc_ = crc32(0, nullptr, 0);  // initialize CRC
         break;
       default:
-        ABSL_RAW_LOG(FATAL, "Unexpected gzip header parsing result: %d",
-                     status);
+        NET_LOG(FATAL, "Unexpected gzip header parsing result: %d", status);
     }
   } else if (gzip_footer_bytes_ >= 0) {
     // We're now just reading the gzip footer. We already read all the data.
@@ -607,10 +599,10 @@ int ZLib::UncompressAtMostOrAll(Bytef *dest, uLongf *destLen,
   }
 
   if ((err = UncompressInit(dest, destLen, source, sourceLen)) != Z_OK) {
-    ABSL_RAW_LOG(WARNING,
-                 "UncompressInit: Error: %d "
-                 " SourceLen: %zu",
-                 err, *sourceLen);
+    NET_LOG(WARNING,
+            "UncompressInit: Error: %d "
+            " SourceLen: %zu",
+            err, *sourceLen);
     return err;
   }
 
@@ -696,11 +688,6 @@ int ZLib::UncompressChunkOrAll(Bytef *dest, uLongf *destLen,
 int ZLib::UncompressAtMost(Bytef *dest, uLongf *destLen, const Bytef *source,
                            uLong *sourceLen) {
   return UncompressAtMostOrAll(dest, destLen, source, sourceLen, Z_SYNC_FLUSH);
-}
-
-int ZLib::UncompressChunk(Bytef *dest, uLongf *destLen, const Bytef *source,
-                          uLong sourceLen) {
-  return UncompressChunkOrAll(dest, destLen, source, sourceLen, Z_SYNC_FLUSH);
 }
 
 // We make sure we've uncompressed everything, that is, the current
@@ -808,7 +795,9 @@ int ZLib::UncompressGzipAndAllocate(Bytef **dest, uLongf *destLen,
   *destLen = uncompress_length;
 
   *dest = std::allocator<Bytef>().allocate(*destLen);
-  if (*dest == nullptr) return Z_MEM_ERROR;
+  if (*dest == nullptr) {
+    return Z_MEM_ERROR;
+  }
 
   const int retval = Uncompress(*dest, destLen, source, sourceLen);
   if (retval != Z_OK) {  // just to make life easier for them

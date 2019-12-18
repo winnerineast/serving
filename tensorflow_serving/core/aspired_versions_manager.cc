@@ -158,6 +158,7 @@ Status AspiredVersionsManager::Create(
       options.load_retry_interval_micros;
   basic_manager_options.flush_filesystem_caches =
       options.flush_filesystem_caches;
+  basic_manager_options.env = options.env;
   basic_manager_options.servable_event_bus = options.servable_event_bus;
   basic_manager_options.pre_load_hook = std::move(options.pre_load_hook);
   std::unique_ptr<BasicManager> basic_manager;
@@ -238,7 +239,7 @@ void AspiredVersionsManager::EnqueueAspiredVersionsRequest(
 
   {
     mutex_lock l(pending_aspired_versions_requests_mu_);
-    VLOG(1) << "Enqueueing aspired versions request: "
+    VLOG(1) << "Enqueueing aspired versions request: " << servable_name << ": "
             << ServableVersionsDebugString(versions);
     pending_aspired_versions_requests_[string(servable_name)] =
         std::move(versions);
@@ -248,7 +249,7 @@ void AspiredVersionsManager::EnqueueAspiredVersionsRequest(
 void AspiredVersionsManager::ProcessAspiredVersionsRequest(
     const StringPiece servable_name,
     std::vector<ServableData<std::unique_ptr<Loader>>> versions) {
-  VLOG(1) << "Processing aspired versions request: "
+  VLOG(1) << "Processing aspired versions request: " << servable_name << ": "
           << ServableVersionsDebugString(versions);
 
   const std::set<int64> next_aspired_versions = GetVersionNumbers(versions);

@@ -7,8 +7,6 @@ package(
 
 licenses(["notice"])  # Apache 2.0
 
-load("//tensorflow_serving:serving.bzl", "serving_proto_library")
-
 filegroup(
     name = "all_files",
     srcs = glob(
@@ -26,10 +24,10 @@ cc_binary(
         "resnet_client.cc",
     ],
     deps = [
-        "//tensorflow_serving/apis:prediction_service_proto",
+        "//tensorflow_serving/apis:prediction_service_cc_proto",
+        "@com_google_protobuf//:protobuf_lite",
         "@grpc//:grpc++",
         "@org_tensorflow//tensorflow/core:framework",
         "@org_tensorflow//tensorflow/core:lib",
-        "@protobuf_archive//:protobuf_lite",
     ],
 )

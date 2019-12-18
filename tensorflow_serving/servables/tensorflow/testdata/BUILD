@@ -12,6 +12,14 @@ package(
 
 licenses(["notice"])  # Apache 2.0
 
+exports_files(
+    [
+        "half_plus_two_model_metadata.json",
+        "saved_model_half_plus_two_2_versions_metadata.json",
+    ],
+    visibility = ["//tensorflow_serving:internal"],
+)
+
 filegroup(
     name = "all_files",
     srcs = glob(
@@ -35,22 +43,11 @@ filegroup(
 )
 
 py_binary(
-    name = "export_half_plus_two",
-    srcs = [
-        "export_half_plus_two.py",
-    ],
-    srcs_version = "PY2AND3",
-    deps = [
-        "@org_tensorflow//tensorflow:tensorflow_py",
-        "@org_tensorflow//tensorflow/contrib/session_bundle:exporter",
-    ],
-)
-
-py_binary(
     name = "export_bad_half_plus_two",
     srcs = [
         "export_bad_half_plus_two.py",
     ],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         "@org_tensorflow//tensorflow:tensorflow_py",
@@ -62,7 +59,8 @@ py_binary(
     srcs = [
         "export_counter.py",
     ],
-    srcs_version = "PY2AND3",
+    python_version = "PY3",
+    srcs_version = "PY3",
     deps = [
         "@org_tensorflow//tensorflow:tensorflow_py",
     ],
@@ -73,6 +71,7 @@ py_binary(
     srcs = [
         "saved_model_half_plus_two.py",
     ],
+    python_version = "PY2",
     srcs_version = "PY2AND3",
     deps = [
         "@org_tensorflow//tensorflow:tensorflow_py",
@@ -93,12 +92,28 @@ filegroup(
     ),
 )
 
-# Note: re-generate these files with :export_half_plus_two whenever model
-# changes.
+filegroup(
+    name = "saved_model_half_plus_two_mkl",
+    srcs = glob(
+        ["saved_model_half_plus_two_mkl/**"],
+    ),
+)
+
+filegroup(
+    name = "saved_model_half_plus_two_tflite",
+    srcs = glob(
+        ["saved_model_half_plus_two_tflite/**"],
+    ),
+)
+
+filegroup(
+    name = "saved_model_half_plus_two_gpu_trt",
+    srcs = glob(
+        ["saved_model_half_plus_two_gpu_trt/**"],
+    ),
+)
+
 exports_files([
-    "half_plus_two/00000123/export.data-00000-of-00001",
-    "half_plus_two/00000123/export.index",
-    "half_plus_two/00000123/export.meta",
     "saved_model_half_plus_three/00000123/saved_model.pb",
     "saved_model_half_plus_three/00000123/assets/foo.txt",
     "saved_model_half_plus_three/00000123/variables/variables.data-00000-of-00001",

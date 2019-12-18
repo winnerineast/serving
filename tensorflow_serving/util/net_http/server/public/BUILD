@@ -2,10 +2,13 @@
 
 package(
     default_visibility = [
+        ":http_server_clients",
         "//tensorflow_serving:internal",
         "//tensorflow_serving/util/net_http:__subpackages__",
     ],
 )
+
+package_group(name = "http_server_clients")
 
 licenses(["notice"])  # Apache 2.0
 
@@ -34,7 +37,6 @@ cc_library(
     deps = [
         ":http_server_api",
         "//tensorflow_serving/util/net_http/server/internal:evhttp_server",
-        "@com_google_absl//absl/base",
         "@com_google_absl//absl/memory",
     ],
 )

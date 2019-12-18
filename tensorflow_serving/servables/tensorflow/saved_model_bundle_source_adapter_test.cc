@@ -20,6 +20,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "google/protobuf/wrappers.pb.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "tensorflow/cc/saved_model/loader.h"
@@ -27,6 +28,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow_serving/core/loader.h"
 #include "tensorflow_serving/core/servable_data.h"
+#include "tensorflow_serving/core/test_util/session_test_util.h"
 #include "tensorflow_serving/resources/resource_util.h"
 #include "tensorflow_serving/resources/resource_values.h"
 #include "tensorflow_serving/resources/resources.pb.h"
@@ -34,6 +36,7 @@ limitations under the License.
 #include "tensorflow_serving/servables/tensorflow/session_bundle_config.pb.h"
 #include "tensorflow_serving/servables/tensorflow/session_bundle_source_adapter.pb.h"
 #include "tensorflow_serving/test_util/test_util.h"
+#include "tensorflow_serving/util/oss_or_google.h"
 
 namespace tensorflow {
 namespace serving {
@@ -41,8 +44,10 @@ namespace {
 
 using test_util::EqualsProto;
 
+Loader::Metadata CreateMetadata() { return {ServableId{"name", 42}}; }
+
 class SavedModelBundleSourceAdapterTest
-    : public ::testing::TestWithParam<bool> {
+    : public ::testing::TestWithParam<std::tuple<bool, bool, bool>> {
  protected:
   SavedModelBundleSourceAdapterTest() {
     ResourceUtil::Options resource_util_options;
@@ -53,6 +58,32 @@ class SavedModelBundleSourceAdapterTest
     ram_resource_ = resource_util_->CreateBoundResource(
         device_types::kMain, resource_kinds::kRamBytes);
     config_.mutable_config()->set_enable_model_warmup(EnableWarmup());
+    if (EnableNumRequestIterations()) {
+      config_.mutable_config()
+          ->mutable_model_warmup_options()
+          ->mutable_num_request_iterations()
+          ->set_value(2);
+    }
+
+    config_.mutable_config()->set_enable_session_metadata(
+        EnableSessionMetadata());
+
+    config_.mutable_config()->set_session_target(
+        test_util::kNewSessionHookSessionTargetPrefix);
+    test_util::SetNewSessionHook([&](const SessionOptions& session_options) {
+      EXPECT_EQ(EnableSessionMetadata(),
+                session_options.config.experimental().has_session_metadata());
+      if (EnableSessionMetadata()) {
+        const auto& actual_session_metadata =
+            session_options.config.experimental().session_metadata();
+        const auto& expected_loader_metadata = CreateMetadata();
+        EXPECT_EQ(expected_loader_metadata.servable_id.name,
+                  actual_session_metadata.name());
+        EXPECT_EQ(expected_loader_metadata.servable_id.version,
+                  actual_session_metadata.version());
+      }
+      return Status::OK();
+    });
   }
 
   void TestSavedModelBundleSourceAdapter(const string& export_dir) const {
@@ -79,7 +110,8 @@ class SavedModelBundleSourceAdapterTest
     TF_ASSERT_OK(loader->EstimateResources(&second_resource_estimate));
     EXPECT_THAT(second_resource_estimate, EqualsProto(first_resource_estimate));
 
-    TF_ASSERT_OK(loader->Load());
+    const auto metadata = CreateMetadata();
+    TF_ASSERT_OK(loader->LoadWithMetadata(CreateMetadata()));
 
     // We should get a new (lower) resource estimate post-load.
     ResourceAllocation expected_post_load_resource_estimate =
@@ -101,7 +133,9 @@ class SavedModelBundleSourceAdapterTest
     loader->Unload();
   }
 
-  bool EnableWarmup() { return GetParam(); }
+  bool EnableWarmup() const { return std::get<0>(GetParam()); }
+  bool EnableNumRequestIterations() const { return std::get<1>(GetParam()); }
+  bool EnableSessionMetadata() const { return std::get<2>(GetParam()); }
 
   std::unique_ptr<ResourceUtil> resource_util_;
   Resource ram_resource_;
@@ -116,14 +150,18 @@ TEST_P(SavedModelBundleSourceAdapterTest, Basic) {
 }
 
 TEST_P(SavedModelBundleSourceAdapterTest, BackwardCompatibility) {
+  if (IsTensorflowServingOSS()) {
+    return;
+  }
   TestSavedModelBundleSourceAdapter(
       test_util::GetTestSessionBundleExportPath());
 }
-
 // Test all SavedModelBundleSourceAdapterTest test cases with
-// warmup enabled/disabled.
-INSTANTIATE_TEST_CASE_P(EnableWarmup, SavedModelBundleSourceAdapterTest,
-                        ::testing::Bool());
+// warmup, num_request_iterations enabled/disabled and session-metadata
+// enabled/disabled.
+INSTANTIATE_TEST_CASE_P(VariousOptions, SavedModelBundleSourceAdapterTest,
+                        ::testing::Combine(::testing::Bool(), ::testing::Bool(),
+                                           ::testing::Bool()));
 
 }  // namespace
 }  // namespace serving

@@ -22,8 +22,8 @@
 # track down dependencies (that are covered by the docker container).
 #
 # Note: This script binds your working directory (via pwd) and /tmp to the
-# Docker container. Any scripts or programs you run will need to have its output
-# routed to one of the above locations in order to persist.
+# Docker container. Any scripts or programs you run will need to have its
+# output files/dirs written to one of the above locations for persistence.
 #
 # Typical usage (to build from lastest upstream source):
 # $ git clone https://github.com/tensorflow/serving.git
@@ -39,11 +39,11 @@ set -e
 function usage() {
   local progname=$(basename $0)
   echo "Usage:"
-  echo "  ${progname} [-d <docker-image-name>] <command> [args ...]"
+  echo "  ${progname} [-d <docker-image-name>] [-o <docker-run-options>] <command> [args ...]"
   echo ""
   echo "Examples:"
   echo "  ${progname} bazel build tensorflow_serving/model_servers:tensorflow_model_server"
-  echo "  ${progname} python tensorflow_serving/examples/mnist_saved_model.py /tmp/mnist"
+  echo "  ${progname} python tensorflow_serving/example/mnist_saved_model.py /tmp/mnist"
   echo "  ${progname} -d tensorflow/serving:latest-devel bazel version"
   exit 1
 }
@@ -68,13 +68,21 @@ function get_python_cmd() {
 }
 
 (( $# < 1 )) && usage
-[[ "$1" = "-"* ]] && [[ "$1" != "-d" ]] && usage
 
 IMAGE="tensorflow/serving:nightly-devel"
-[[ "$1" = "-d" ]] && IMAGE=$2 && shift 2 || true
-[[ "${IMAGE}" = "" ]] && usage
+RUN_OPTS=()
+while [[ $# > 1 ]]; do
+  case "$1" in
+    -d)
+      IMAGE="$2"; shift 2;;
+    -o)
+      RUN_OPTS=($2); shift 2;;
+    *)
+      break;;
+  esac
+done
 
-RUN_OPTS=(--rm -it --network=host)
+RUN_OPTS+=(--rm -it --network=host)
 # Map the working directory and /tmp to allow scripts/binaries to run and also
 # output data that might be used by other scripts/binaries
 RUN_OPTS+=("-v $(pwd):$(pwd)")

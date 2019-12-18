@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow_serving/resources/resource_util.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
@@ -92,17 +93,59 @@ ResourceUtil::ResourceUtil(const Options& options)
 
 Status ResourceUtil::VerifyValidity(
     const ResourceAllocation& allocation) const {
-  return VerifyValidityInternal(allocation, DCHECKFailOption::kDoNotDCHECKFail);
+  const Status result = [this, &allocation]() -> Status {
+    // We use 'validated_entries' to look for duplicates.
+    ResourceAllocation validated_entries;
+    for (const auto& entry : allocation.resource_quantities()) {
+      TF_RETURN_IF_ERROR(VerifyFunctionInternal(
+          [&]() { return VerifyResourceValidity(entry.resource()); },
+          DCHECKFailOption::kDoNotDCHECKFail));
+
+      if (FindMutableEntry(entry.resource(), &validated_entries) != nullptr) {
+        return errors::InvalidArgument(
+            "Invalid resource allocation: Repeated resource\n",
+            entry.resource().DebugString(), "in allocation\n",
+            allocation.DebugString());
+      }
+
+      *validated_entries.add_resource_quantities() = entry;
+    }
+    return Status::OK();
+  }();
+  if (!result.ok()) {
+    LOG(ERROR) << result;
+  }
+
+  return result;
 }
 
 Status ResourceUtil::VerifyResourceValidity(const Resource& resource) const {
-  return VerifyResourceValidityInternal(resource,
-                                        DCHECKFailOption::kDoNotDCHECKFail);
+  const Status result = [this, &resource]() -> Status {
+    auto it = devices_.find(resource.device());
+    if (it == devices_.end()) {
+      return errors::InvalidArgument(
+          "Invalid resource allocation: Invalid device ", resource.device());
+    }
+    const uint32 num_instances = it->second;
+    if (resource.has_device_instance() &&
+        resource.device_instance().value() >= num_instances) {
+      return errors::InvalidArgument(
+          "Invalid resource allocation: Invalid device instance ",
+          resource.device(), ":", resource.device_instance().value());
+    }
+    return Status::OK();
+  }();
+  if (!result.ok()) {
+    LOG(ERROR) << result;
+  }
+
+  return result;
 }
 
 ResourceAllocation ResourceUtil::Normalize(
     const ResourceAllocation& allocation) const {
-  if (!VerifyValidityInternal(allocation, DCHECKFailOption::kDoDCHECKFail)
+  if (!VerifyFunctionInternal([&]() { return VerifyValidity(allocation); },
+                              DCHECKFailOption::kDoDCHECKFail)
            .ok()) {
     return allocation;
   }
@@ -123,7 +166,8 @@ ResourceAllocation ResourceUtil::Normalize(
 }
 
 bool ResourceUtil::IsNormalized(const ResourceAllocation& allocation) const {
-  if (!VerifyValidityInternal(allocation, DCHECKFailOption::kDoDCHECKFail)
+  if (!VerifyFunctionInternal([&]() { return VerifyValidity(allocation); },
+                              DCHECKFailOption::kDoDCHECKFail)
            .ok()) {
     return false;
   }
@@ -225,6 +269,11 @@ ResourceAllocation ResourceUtil::Max(const ResourceAllocation& lhs,
   return MaxNormalized(Normalize(lhs), Normalize(rhs));
 }
 
+ResourceAllocation ResourceUtil::Min(const ResourceAllocation& lhs,
+                                     const ResourceAllocation& rhs) const {
+  return MinNormalized(Normalize(lhs), Normalize(rhs));
+}
+
 bool ResourceUtil::IsBoundNormalized(
     const ResourceAllocation& allocation) const {
   DCHECK(IsNormalized(allocation));
@@ -236,61 +285,12 @@ bool ResourceUtil::IsBoundNormalized(
   return true;
 }
 
-Status ResourceUtil::VerifyValidityInternal(
-    const ResourceAllocation& allocation,
-    DCHECKFailOption dcheck_fail_option) const {
-  const Status result = [this, &allocation]() -> Status {
-    // We use 'validated_entries' to look for duplicates.
-    ResourceAllocation validated_entries;
-    for (const auto& entry : allocation.resource_quantities()) {
-      TF_RETURN_IF_ERROR(VerifyResourceValidityInternal(
-          entry.resource(), DCHECKFailOption::kDoNotDCHECKFail));
-
-      if (FindMutableEntry(entry.resource(), &validated_entries) != nullptr) {
-        return errors::InvalidArgument(
-            "Invalid resource allocation: Repeated resource\n",
-            entry.resource().DebugString(), "in allocation\n",
-            allocation.DebugString());
-      }
-
-      *validated_entries.add_resource_quantities() = entry;
-    }
-    return Status::OK();
-  }();
+Status ResourceUtil::VerifyFunctionInternal(
+    std::function<Status()> fn, DCHECKFailOption dcheck_fail_option) const {
+  const Status result = fn();
 
   if (dcheck_fail_option == DCHECKFailOption::kDoDCHECKFail) {
     TF_DCHECK_OK(result);
-  }
-  if (!result.ok()) {
-    LOG(ERROR) << result;
-  }
-
-  return result;
-}
-
-Status ResourceUtil::VerifyResourceValidityInternal(
-    const Resource& resource, DCHECKFailOption dcheck_fail_option) const {
-  const Status result = [this, &resource]() -> Status {
-    auto it = devices_.find(resource.device());
-    if (it == devices_.end()) {
-      return errors::InvalidArgument(
-          "Invalid resource allocation: Invalid device ", resource.device());
-    }
-    const uint32 num_instances = it->second;
-    if (resource.has_device_instance() &&
-        resource.device_instance().value() >= num_instances) {
-      return errors::InvalidArgument(
-          "Invalid resource allocation: Invalid device instance ",
-          resource.device(), ":", resource.device_instance().value());
-    }
-    return Status::OK();
-  }();
-
-  if (dcheck_fail_option == DCHECKFailOption::kDoDCHECKFail) {
-    TF_DCHECK_OK(result);
-  }
-  if (!result.ok()) {
-    LOG(ERROR) << result;
   }
 
   return result;
@@ -308,7 +308,9 @@ Resource ResourceUtil::NormalizeResource(const Resource& resource) const {
 }
 
 bool ResourceUtil::IsResourceNormalized(const Resource& resource) const {
-  if (!VerifyResourceValidityInternal(resource, DCHECKFailOption::kDoDCHECKFail)
+  if (!VerifyFunctionInternal(
+           [&]() { return VerifyResourceValidity(resource); },
+           DCHECKFailOption::kDoDCHECKFail)
            .ok()) {
     return false;
   }
@@ -371,8 +373,12 @@ void ResourceUtil::MultiplyNormalized(uint64 multiplier,
 
 bool ResourceUtil::EqualNormalized(const ResourceAllocation& lhs,
                                    const ResourceAllocation& rhs) const {
-  if (!VerifyValidityInternal(lhs, DCHECKFailOption::kDoDCHECKFail).ok() ||
-      !VerifyValidityInternal(rhs, DCHECKFailOption::kDoDCHECKFail).ok()) {
+  if (!VerifyFunctionInternal([&]() { return VerifyValidity(lhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
+           .ok() ||
+      !VerifyFunctionInternal([&]() { return VerifyValidity(rhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
+           .ok()) {
     return false;
   }
   DCHECK(IsNormalized(lhs));
@@ -402,9 +408,11 @@ bool ResourceUtil::EqualNormalized(const ResourceAllocation& lhs,
 
 bool ResourceUtil::ResourcesEqualNormalized(const Resource& lhs,
                                             const Resource& rhs) const {
-  if (!VerifyResourceValidityInternal(lhs, DCHECKFailOption::kDoDCHECKFail)
+  if (!VerifyFunctionInternal([&]() { return VerifyResourceValidity(lhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
            .ok() ||
-      !VerifyResourceValidityInternal(rhs, DCHECKFailOption::kDoDCHECKFail)
+      !VerifyFunctionInternal([&]() { return VerifyResourceValidity(rhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
            .ok()) {
     return false;
   }
@@ -415,8 +423,12 @@ bool ResourceUtil::ResourcesEqualNormalized(const Resource& lhs,
 
 bool ResourceUtil::LessThanOrEqualNormalized(
     const ResourceAllocation& lhs, const ResourceAllocation& rhs) const {
-  if (!VerifyValidityInternal(lhs, DCHECKFailOption::kDoDCHECKFail).ok() ||
-      !VerifyValidityInternal(rhs, DCHECKFailOption::kDoDCHECKFail).ok()) {
+  if (!VerifyFunctionInternal([&]() { return VerifyValidity(lhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
+           .ok() ||
+      !VerifyFunctionInternal([&]() { return VerifyValidity(rhs); },
+                              DCHECKFailOption::kDoDCHECKFail)
+           .ok()) {
     return false;
   }
   DCHECK(IsNormalized(lhs));
@@ -462,7 +474,8 @@ bool ResourceUtil::LessThanOrEqualNormalized(
 
 ResourceAllocation ResourceUtil::OverbindNormalized(
     const ResourceAllocation& allocation) const {
-  if (!VerifyValidityInternal(allocation, DCHECKFailOption::kDoDCHECKFail)
+  if (!VerifyFunctionInternal([&]() { return VerifyValidity(allocation); },
+                              DCHECKFailOption::kDoDCHECKFail)
            .ok()) {
     return allocation;
   }
@@ -506,6 +519,27 @@ ResourceAllocation ResourceUtil::MaxNormalized(
     }
   }
   return max_resource_allocation;
+}
+
+ResourceAllocation ResourceUtil::MinNormalized(
+    const ResourceAllocation& lhs, const ResourceAllocation& rhs) const {
+  DCHECK(IsNormalized(lhs));
+  DCHECK(IsNormalized(rhs));
+
+  ResourceAllocation min_resource_allocation;
+  ResourceAllocation rhs_copy = rhs;
+  for (const ResourceAllocation::Entry& lhs_entry : lhs.resource_quantities()) {
+    ResourceAllocation::Entry* rhs_entry =
+        FindMutableEntry(lhs_entry.resource(), &rhs_copy);
+    if (rhs_entry != nullptr) {
+      ResourceAllocation::Entry* min_entry =
+          min_resource_allocation.add_resource_quantities();
+      *min_entry->mutable_resource() = lhs_entry.resource();
+      min_entry->set_quantity(
+          std::min(lhs_entry.quantity(), rhs_entry->quantity()));
+    }
+  }
+  return min_resource_allocation;
 }
 
 }  // namespace serving

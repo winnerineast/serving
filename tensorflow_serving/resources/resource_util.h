@@ -38,7 +38,7 @@ class ResourceUtil {
     std::map<string, uint32> devices;
   };
   explicit ResourceUtil(const Options& options);
-  ~ResourceUtil() = default;
+  virtual ~ResourceUtil() = default;
 
   // Determines whether 'allocation' is valid, i.e.:
   //  1. It only refers to valid devices, i.e. those supplied via Options.
@@ -47,7 +47,7 @@ class ResourceUtil {
   //
   // All other methods in this class assume their inputs are valid (i.e. they
   // have undefined behavior otherwise), and guarantee to produce valid outputs.
-  Status VerifyValidity(const ResourceAllocation& allocation) const;
+  virtual Status VerifyValidity(const ResourceAllocation& allocation) const;
 
   // Verifies whether 'resource' is valid, i.e. it only refers to valid devices,
   // i.e. those supplied via Options.
@@ -57,10 +57,11 @@ class ResourceUtil {
   //  1. It has no entries with quantity 0.
   //  2. Resources of a device that has exactly one instance are bound to that
   //     instance.
-  ResourceAllocation Normalize(const ResourceAllocation& allocation) const;
+  virtual ResourceAllocation Normalize(
+      const ResourceAllocation& allocation) const;
 
   // Determines whether 'allocation' is in normal form, as defined above.
-  bool IsNormalized(const ResourceAllocation& allocation) const;
+  virtual bool IsNormalized(const ResourceAllocation& allocation) const;
 
   // Determines whether 'allocation' is bound, defined as follows:
   //  1. An individual entry is bound iff a device_instance is supplied.
@@ -150,17 +151,26 @@ class ResourceUtil {
   ResourceAllocation Max(const ResourceAllocation& lhs,
                          const ResourceAllocation& rhs) const;
 
+  // Gets the min of the two ResourceAllocations by taking the min of every
+  // paired entry and remove all the unpaired entries in the result. Like the
+  // Max() method, this keeps the bound and unbound resources separate.
+  //
+  // E.g.
+  // Min(
+  // {(GPU/instance_0/RAM/8), (CPU/instance_0/processing_in_millicores/100)},
+  // {(GPU/instance_0/RAM/16), (CPU/<no_instance>/RAM/4)}
+  // )
+  // returns
+  // {(GPU/instance_0/RAM/8)}
+  ResourceAllocation Min(const ResourceAllocation& lhs,
+                         const ResourceAllocation& rhs) const;
+
  private:
   enum class DCHECKFailOption { kDoDCHECKFail, kDoNotDCHECKFail };
 
-  // Wraps VerifyValidity() with error logging and the option to DCHECK-fail.
-  Status VerifyValidityInternal(const ResourceAllocation& allocation,
+  // Wraps fn() with the option to DCHECK-fail.
+  Status VerifyFunctionInternal(std::function<Status()> fn,
                                 DCHECKFailOption dcheck_fail_option) const;
-
-  // Wraps VerifyResourceValidity() with error logging and the option to
-  // DCHECK-fail.
-  Status VerifyResourceValidityInternal(
-      const Resource& resource, DCHECKFailOption dcheck_fail_option) const;
 
   // Converts 'resource' to normal form, i.e. ensures that if the device has
   // exactly one instance, the resource is bound to that instance.
@@ -205,6 +215,11 @@ class ResourceUtil {
   // Like Max(), but assumes the input are normalized and produces a normalized
   // result.
   ResourceAllocation MaxNormalized(const ResourceAllocation& lhs,
+                                   const ResourceAllocation& rhs) const;
+
+  // Like Min(), but assumes the input are normalized and produces a normalized
+  // result.
+  ResourceAllocation MinNormalized(const ResourceAllocation& lhs,
                                    const ResourceAllocation& rhs) const;
 
   const std::map<string, uint32> devices_;

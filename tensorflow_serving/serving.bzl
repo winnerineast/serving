@@ -1,5 +1,5 @@
-load("@protobuf_archive//:protobuf.bzl", "cc_proto_library")
-load("@protobuf_archive//:protobuf.bzl", "py_proto_library")
+load("@com_google_protobuf//:protobuf.bzl", "cc_proto_library")
+load("@com_google_protobuf//:protobuf.bzl", "py_proto_library")
 
 def serving_proto_library(
         name,
@@ -19,13 +19,22 @@ def serving_proto_library(
     use_grpc_plugin = None
     if cc_grpc_version:
         use_grpc_plugin = True
+
+    # For compatibility with Google-internal naming conventions
+    native.alias(
+        name = name[:-len("_proto")] + "_cc_proto",
+        actual = name,
+        testonly = testonly,
+        visibility = visibility,
+    )
+
     cc_proto_library(
         name = name,
         srcs = srcs,
         deps = deps,
-        cc_libs = ["@protobuf_archive//:protobuf"],
-        protoc = "@protobuf_archive//:protoc",
-        default_runtime = "@protobuf_archive//:protobuf",
+        cc_libs = ["@com_google_protobuf//:protobuf"],
+        protoc = "@com_google_protobuf//:protoc",
+        default_runtime = "@com_google_protobuf//:protobuf",
         use_grpc_plugin = use_grpc_plugin,
         testonly = testonly,
         visibility = visibility,
@@ -40,9 +49,9 @@ def serving_proto_library_py(name, proto_library, srcs = [], deps = [], visibili
         name = name,
         srcs = srcs,
         srcs_version = "PY2AND3",
-        deps = ["@protobuf_archive//:protobuf_python"] + deps,
-        default_runtime = "@protobuf_archive//:protobuf_python",
-        protoc = "@protobuf_archive//:protoc",
+        deps = ["@com_google_protobuf//:protobuf_python"] + deps,
+        default_runtime = "@com_google_protobuf//:protobuf_python",
+        protoc = "@com_google_protobuf//:protoc",
         visibility = visibility,
         testonly = testonly,
     )

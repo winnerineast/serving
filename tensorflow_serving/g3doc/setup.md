@@ -167,25 +167,34 @@ tools/run_in_docker.sh bazel build --config=nativeopt tensorflow_serving/...
 
 It's also possible to compile using specific instruction sets (e.g. AVX).
 Wherever you see `bazel build` in the documentation, simply add the
-corresponding flag:
+corresponding flags:
 
 Instruction Set            | Flags
 -------------------------- | ----------------------
-AVX                        | `--copt=mavx`
-AVX2                       | `--copt=mavx2`
-FMA                        | `--copt=mfma`
-SSE 4.1                    | `--copt=msse4.1`
-SSE 4.2                    | `--copt=msse4.2`
+AVX                        | `--copt=-mavx`
+AVX2                       | `--copt=-mavx2`
+FMA                        | `--copt=-mfma`
+SSE 4.1                    | `--copt=-msse4.1`
+SSE 4.2                    | `--copt=-msse4.2`
 All supported by processor | `--copt=-march=native`
 
+For example:
+
+```shell
+tools/run_in_docker.sh bazel build --copt=-mavx2 tensorflow_serving/...
+```
+
 Note: These instruction sets are not available on all machines, especially with
-older processors. Use `--copt=-march=native` if you're unsure what you need.
+older processors. Use the default `--config=nativeopt` to build an optimized
+version of TensorFlow Serving for your processor if you are in doubt.
+
 
 ##### Building with GPU Support
 
 In order to build a custom version of TensorFlow Serving with GPU support, we
-recommend either building with the [provided Docker images](docker.md#developing-with-docker), or
-following the approach in the
+recommend either building with the
+[provided Docker images](building_with_docker.md), or following the approach in
+the
 [GPU Dockerfile](https://github.com/tensorflow/serving/blob/master/tensorflow_serving/tools/docker/Dockerfile.devel-gpu).
 
 ## TensorFlow Serving Python API PIP package

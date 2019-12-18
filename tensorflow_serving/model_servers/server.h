@@ -19,9 +19,11 @@ limitations under the License.
 #include <memory>
 
 #include "grpcpp/server.h"
+#include "tensorflow/core/kernels/batching_util/periodic_function.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/profiler/rpc/profiler_service_impl.h"
 #include "tensorflow_serving/model_servers/http_server.h"
 #include "tensorflow_serving/model_servers/model_service_impl.h"
 #include "tensorflow_serving/model_servers/prediction_service_impl.h"
@@ -39,6 +41,7 @@ class Server {
     //
     tensorflow::int32 grpc_port = 8500;
     tensorflow::string grpc_channel_arguments;
+    tensorflow::string grpc_socket_path;
 
     //
     // HTTP Server options.
@@ -51,6 +54,7 @@ class Server {
     // Model Server options.
     //
     bool enable_batching = false;
+    bool allow_version_labels_for_unavailable_models = false;
     float per_process_gpu_memory_fraction = 0;
     tensorflow::string batching_parameters_file;
     tensorflow::string model_name;
@@ -63,11 +67,23 @@ class Server {
     // Tensorflow session parallelism of zero means that both inter and intra op
     // thread pools will be auto configured.
     tensorflow::int64 tensorflow_session_parallelism = 0;
+
+    // Zero means that the thread pools will be auto configured.
+    tensorflow::int64 tensorflow_intra_op_parallelism = 0;
+    tensorflow::int64 tensorflow_inter_op_parallelism = 0;
     tensorflow::string platform_config_file;
     tensorflow::string ssl_config_file;
     string model_config_file;
+    // Zero means server will not poll FS for model config file after start-up.
+    tensorflow::int32 fs_model_config_poll_wait_seconds = 0;
     bool enable_model_warmup = true;
+    // This value is used only if > 0.
+    tensorflow::int32 num_request_iterations_for_warmup = 0;
     tensorflow::string monitoring_config_file;
+    // Tensorflow session run options.
+    bool enforce_session_run_timeout = true;
+    bool remove_unused_fields_from_bundle_metagraph = true;
+    bool use_tflite_model = false;
 
     Options();
   };
@@ -85,11 +101,19 @@ class Server {
   void WaitForTermination();
 
  private:
+  // Polls the filesystem, parses config at specified path, and calls
+  // ServerCore::ReloadConfig with the captured model config.
+  void PollFilesystemAndReloadConfig(const string& config_file_path);
+
   std::unique_ptr<ServerCore> server_core_;
   std::unique_ptr<ModelServiceImpl> model_service_;
   std::unique_ptr<PredictionServiceImpl> prediction_service_;
+  std::unique_ptr<tensorflow::grpc::ProfilerService::Service> profiler_service_;
   std::unique_ptr<::grpc::Server> grpc_server_;
   std::unique_ptr<net_http::HTTPServerInterface> http_server_;
+  // A thread that calls PollFilesystemAndReloadConfig() periodically if
+  // fs_model_config_poll_wait_seconds > 0.
+  std::unique_ptr<PeriodicFunction> fs_config_polling_thread_;
 };
 
 }  // namespace main

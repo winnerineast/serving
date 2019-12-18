@@ -59,6 +59,10 @@ int main(int argc, char** argv) {
   std::vector<tensorflow::Flag> flag_list = {
       tensorflow::Flag("port", &options.grpc_port,
                        "Port to listen on for gRPC API"),
+      tensorflow::Flag("grpc_socket_path", &options.grpc_socket_path,
+                       "If non-empty, listen to a UNIX socket for gRPC API "
+                       "on the given path. Can be either relative or absolute "
+                       "path."),
       tensorflow::Flag("rest_api_port", &options.http_port,
                        "Port to listen on for HTTP/REST API. If set to zero "
                        "HTTP/REST API will not be exported. This port must be "
@@ -70,6 +74,11 @@ int main(int argc, char** argv) {
                        "Timeout for HTTP/REST API calls."),
       tensorflow::Flag("enable_batching", &options.enable_batching,
                        "enable batching"),
+      tensorflow::Flag(
+          "allow_version_labels_for_unavailable_models",
+          &options.allow_version_labels_for_unavailable_models,
+          "If true, allows assigning unused version labels to models that are "
+          "not available yet."),
       tensorflow::Flag("batching_parameters_file",
                        &options.batching_parameters_file,
                        "If non-empty, read an ascii BatchingParameters "
@@ -82,9 +91,16 @@ int main(int argc, char** argv) {
                        "specify multiple models to serve and other advanced "
                        "parameters including non-default version policy. (If "
                        "used, --model_name, --model_base_path are ignored.)"),
+      tensorflow::Flag("model_config_file_poll_wait_seconds",
+                       &options.fs_model_config_poll_wait_seconds,
+                       "Interval in seconds between each poll of the filesystem"
+                       "for model_config_file. If unset or set to zero, "
+                       "poll will be done exactly once and not periodically. "
+                       "Setting this to negative is reserved for testing "
+                       "purposes only."),
       tensorflow::Flag("model_name", &options.model_name,
                        "name of model (ignored "
-                       "if --model_config_file flag is set"),
+                       "if --model_config_file flag is set)"),
       tensorflow::Flag("model_base_path", &options.model_base_path,
                        "path to export (ignored if --model_config_file flag "
                        "is set, otherwise required)"),
@@ -100,8 +116,13 @@ int main(int argc, char** argv) {
                        "Default: 1 minute"),
       tensorflow::Flag("file_system_poll_wait_seconds",
                        &options.file_system_poll_wait_seconds,
-                       "interval in seconds between each poll of the file "
-                       "system for new model version"),
+                       "Interval in seconds between each poll of the "
+                       "filesystem for new model version. If set to zero "
+                       "poll will be exactly done once and not periodically. "
+                       "Setting this to negative value will disable polling "
+                       "entirely causing ModelServer to indefinitely wait for "
+                       "a new model at startup. Negative values are reserved "
+                       "for testing purposes only."),
       tensorflow::Flag("flush_filesystem_caches",
                        &options.flush_filesystem_caches,
                        "If true (the default), filesystem caches will be "
@@ -115,6 +136,18 @@ int main(int argc, char** argv) {
                        &options.tensorflow_session_parallelism,
                        "Number of threads to use for running a "
                        "Tensorflow session. Auto-configured by default."
+                       "Note that this option is ignored if "
+                       "--platform_config_file is non-empty."),
+      tensorflow::Flag("tensorflow_intra_op_parallelism",
+                       &options.tensorflow_intra_op_parallelism,
+                       "Number of threads to use to parallelize the execution"
+                       "of an individual op. Auto-configured by default."
+                       "Note that this option is ignored if "
+                       "--platform_config_file is non-empty."),
+      tensorflow::Flag("tensorflow_inter_op_parallelism",
+                       &options.tensorflow_inter_op_parallelism,
+                       "Controls the number of operators that can be executed "
+                       "simultaneously. Auto-configured by default."
                        "Note that this option is ignored if "
                        "--platform_config_file is non-empty."),
       tensorflow::Flag(
@@ -149,7 +182,17 @@ int main(int argc, char** argv) {
       tensorflow::Flag(
           "monitoring_config_file", &options.monitoring_config_file,
           "If non-empty, read an ascii MonitoringConfig protobuf from "
-          "the supplied file name")};
+          "the supplied file name"),
+      tensorflow::Flag(
+          "remove_unused_fields_from_bundle_metagraph",
+          &options.remove_unused_fields_from_bundle_metagraph,
+          "Removes unused fields from MetaGraphDef proto message to save "
+          "memory."),
+      tensorflow::Flag("use_tflite_model", &options.use_tflite_model,
+                       "EXPERIMENTAL; CAN BE REMOVED ANYTIME! Load and use "
+                       "TensorFlow Lite model from `model.tflite` file in "
+                       "SavedModel directory instead of the TensorFlow model "
+                       "from `saved_model.pb` file.")};
 
   const auto& usage = tensorflow::Flags::Usage(argv[0], flag_list);
   if (!tensorflow::Flags::Parse(&argc, argv, flag_list)) {

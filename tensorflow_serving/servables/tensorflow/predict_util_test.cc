@@ -20,7 +20,6 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "tensorflow/cc/saved_model/loader.h"
 #include "tensorflow/cc/saved_model/signature_constants.h"
-#include "tensorflow/contrib/session_bundle/session_bundle.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow_serving/core/availability_preserving_policy.h"
 #include "tensorflow_serving/model_servers/model_platform_types.h"
@@ -30,6 +29,7 @@ limitations under the License.
 #include "tensorflow_serving/servables/tensorflow/session_bundle_config.pb.h"
 #include "tensorflow_serving/servables/tensorflow/session_bundle_source_adapter.pb.h"
 #include "tensorflow_serving/test_util/test_util.h"
+#include "tensorflow_serving/util/oss_or_google.h"
 
 namespace tensorflow {
 namespace serving {
@@ -44,22 +44,24 @@ const char kOutputTensorKey[] = "y";
 // Parameter is 'bool use_saved_model'.
 class PredictImplTest : public ::testing::Test {
  public:
-  static void SetUpTestCase() {
-    const string bad_half_plus_two_path = test_util::TestSrcDirPath(
-        "/servables/tensorflow/testdata/bad_half_plus_two");
+  static void SetUpTestSuite() {
+    if (!IsTensorflowServingOSS()) {
+      const string bad_half_plus_two_path = test_util::TestSrcDirPath(
+          "/servables/tensorflow/testdata/bad_half_plus_two");
+      TF_ASSERT_OK(CreateServerCore(bad_half_plus_two_path, true,
+                                    &saved_model_server_core_bad_model_));
+    }
 
     TF_ASSERT_OK(CreateServerCore(test_util::TensorflowTestSrcDirPath(
                                       "cc/saved_model/testdata/half_plus_two"),
                                   true, &saved_model_server_core_));
-    TF_ASSERT_OK(CreateServerCore(bad_half_plus_two_path, true,
-                                  &saved_model_server_core_bad_model_));
     TF_ASSERT_OK(CreateServerCore(
         test_util::TestSrcDirPath(
             "/servables/tensorflow/testdata/saved_model_counter"),
         true, &saved_model_server_core_counter_model_));
   }
 
-  static void TearDownTestCase() {
+  static void TearDownTestSuite() {
     saved_model_server_core_.reset();
     saved_model_server_core_bad_model_.reset();
     saved_model_server_core_counter_model_.reset();
@@ -251,6 +253,9 @@ TEST_F(PredictImplTest, InputTensorsHaveWrongType) {
 }
 
 TEST_F(PredictImplTest, ModelMissingSignatures) {
+  if (IsTensorflowServingOSS()) {
+    return;
+  }
   PredictRequest request;
   PredictResponse response;
 

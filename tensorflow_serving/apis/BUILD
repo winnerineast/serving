@@ -1,5 +1,10 @@
 # Description: Tensorflow Serving APIs.
 
+load("//tensorflow_serving:serving.bzl", "serving_proto_library")
+load("//tensorflow_serving:serving.bzl", "serving_proto_library_py")
+load("//tensorflow_serving:serving.bzl", "serving_go_grpc_library")
+load("@org_tensorflow//tensorflow/core/platform:build_config.bzl", "tf_jspb_proto_library", "tf_pyclif_proto_library")
+
 package(
     default_visibility = ["//visibility:public"],
     features = ["-layering_check"],
@@ -18,19 +23,14 @@ filegroup(
     ),
 )
 
-load("//tensorflow_serving:serving.bzl", "serving_proto_library")
-load("//tensorflow_serving:serving.bzl", "serving_proto_library_py")
-load("//tensorflow_serving:serving.bzl", "serving_go_grpc_library")
-load("@org_tensorflow//tensorflow/core:platform/default/build_config.bzl", "tf_jspb_proto_library", "tf_pyclif_proto_library")
-
 serving_proto_library(
     name = "get_model_metadata_proto",
     srcs = ["get_model_metadata.proto"],
     cc_api_version = 2,
     deps = [
         ":model_proto",
-        "@org_tensorflow//tensorflow/core:protos_all_cc",
-        "@protobuf_archive//:cc_wkt_protos",
+        "@com_google_protobuf//:cc_wkt_protos",
+        "@org_tensorflow//tensorflow/core:protos_all",
     ],
 )
 
@@ -49,7 +49,7 @@ serving_proto_library(
     srcs = ["input.proto"],
     cc_api_version = 2,
     deps = [
-        "@org_tensorflow//tensorflow/core:protos_all_cc",
+        "@org_tensorflow//tensorflow/core:protos_all",
     ],
 )
 
@@ -64,6 +64,7 @@ serving_proto_library_py(
 
 tf_pyclif_proto_library(
     name = "input_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":input_proto",
     proto_srcfile = "input.proto",
 )
@@ -78,7 +79,7 @@ serving_proto_library(
     srcs = ["model.proto"],
     cc_api_version = 2,
     deps = [
-        "@protobuf_archive//:cc_wkt_protos",
+        "@com_google_protobuf//:cc_wkt_protos",
     ],
 )
 
@@ -91,6 +92,7 @@ serving_proto_library_py(
 
 tf_pyclif_proto_library(
     name = "model_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":model_proto",
     proto_srcfile = "model.proto",
 )
@@ -106,7 +108,7 @@ serving_proto_library(
     cc_api_version = 2,
     deps = [
         ":model_proto",
-        "@org_tensorflow//tensorflow/core:protos_all_cc",
+        "@org_tensorflow//tensorflow/core:protos_all",
     ],
 )
 
@@ -186,6 +188,7 @@ py_library(
 
 tf_pyclif_proto_library(
     name = "predict_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":predict_proto",
     proto_srcfile = "predict.proto",
 )
@@ -290,6 +293,7 @@ serving_proto_library_py(
 
 tf_pyclif_proto_library(
     name = "classification_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":classification_proto",
     proto_srcfile = "classification.proto",
 )
@@ -325,6 +329,7 @@ serving_proto_library_py(
 
 tf_pyclif_proto_library(
     name = "inference_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":inference_proto",
     proto_srcfile = "inference.proto",
 )
@@ -362,7 +367,7 @@ serving_proto_library(
     cc_api_version = 2,
     deps = [
         ":model_proto",
-        "@org_tensorflow//tensorflow/core:protos_all_cc",
+        "@org_tensorflow//tensorflow/core:protos_all",
     ],
 )
 
@@ -378,6 +383,7 @@ serving_proto_library_py(
 
 tf_pyclif_proto_library(
     name = "regression_pyclif",
+    deprecated_proto_lib_visibility = True,  # TODO(b/136847937)
     proto_lib = ":regression_proto",
     proto_srcfile = "regression.proto",
 )
@@ -386,7 +392,7 @@ cc_library(
     name = "classifier",
     hdrs = ["classifier.h"],
     deps = [
-        ":classification_proto",
+        ":classification_cc_proto",
         "@org_tensorflow//tensorflow/core:lib",
     ],
 )
@@ -395,7 +401,7 @@ cc_library(
     name = "regressor",
     hdrs = ["regressor.h"],
     deps = [
-        ":regression_proto",
+        ":regression_cc_proto",
         "@org_tensorflow//tensorflow/core:lib",
     ],
 )

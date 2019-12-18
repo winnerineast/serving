@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow_serving/model_servers/server_core.h"
 
 #include <utility>
+#include <vector>
 
 #include "google/protobuf/any.pb.h"
 #include "google/protobuf/wrappers.pb.h"
@@ -339,8 +340,9 @@ Status ServerCore::AddModelsViaModelConfigList() {
     std::unique_ptr<DynamicSourceRouter<StoragePath>> router;
     TF_RETURN_IF_ERROR(CreateRouter(routes, &adapters, &router));
     std::unique_ptr<FileSystemStoragePathSource> source;
-    TF_RETURN_IF_ERROR(
-        CreateStoragePathSource(source_config, router.get(), &source));
+    std::unique_ptr<PrefixStoragePathSourceAdapter> prefix_source_adapter;
+    TF_RETURN_IF_ERROR(CreateStoragePathSource(
+        source_config, router.get(), &source, &prefix_source_adapter));
 
     // Connect the adapters to the manager, and wait for the models to load.
     TF_RETURN_IF_ERROR(ConnectAdaptersToManagerAndAwaitModelLoads(&adapters));
@@ -348,6 +350,9 @@ Status ServerCore::AddModelsViaModelConfigList() {
     // Stow the source components.
     storage_path_source_and_router_ = {source.get(), router.get()};
     manager_.AddDependency(std::move(source));
+    if (prefix_source_adapter != nullptr) {
+      manager_.AddDependency(std::move(prefix_source_adapter));
+    }
     manager_.AddDependency(std::move(router));
     for (auto& entry : adapters.platform_adapters) {
       auto& adapter = entry.second;
@@ -411,11 +416,11 @@ Status ServerCore::MaybeUpdateServerRequestLogger(
   }
 
   if (config_case == ModelServerConfig::kModelConfigList) {
-    std::map<string, LoggingConfig> logging_config_map;
+    std::map<string, std::vector<LoggingConfig>> logging_config_map;
     for (const auto& model_config : config_.model_config_list().config()) {
       if (model_config.has_logging_config()) {
         logging_config_map.insert(
-            {model_config.name(), model_config.logging_config()});
+            {model_config.name(), {model_config.logging_config()}});
       }
     }
     return options_.server_request_logger->Update(logging_config_map);
@@ -499,11 +504,23 @@ Status ServerCore::UpdateModelVersionLabelMap() {
       const string& label = entry.first;
       const int64 version = entry.second;
 
+      bool contains_existing_label_with_different_version = false;
+      int64 existing_version;
+      if (GetModelVersionForLabel(model_config.name(), label, &existing_version)
+              .ok() &&
+          existing_version != version) {
+        contains_existing_label_with_different_version = true;
+      }
+      bool allow_version_labels_for_unavailable_models =
+          options_.allow_version_labels_for_unavailable_models &&
+          (!contains_existing_label_with_different_version);
+
       // Verify that the label points to a version that is currently available.
       auto serving_states_it = serving_states.find(version);
-      if (serving_states_it == serving_states.end() ||
-          serving_states_it->second.state.manager_state !=
-              ServableState::ManagerState::kAvailable) {
+      if (!allow_version_labels_for_unavailable_models &&
+          (serving_states_it == serving_states.end() ||
+           serving_states_it->second.state.manager_state !=
+               ServableState::ManagerState::kAvailable)) {
         return errors::FailedPrecondition(strings::StrCat(
             "Request to assign label to version ", version, " of model ",
             model_config.name(),
@@ -554,6 +571,8 @@ FileSystemStoragePathSourceConfig ServerCore::CreateStoragePathSourceConfig(
       options_.file_system_poll_wait_seconds);
   source_config.set_fail_if_zero_versions_at_startup(
       options_.fail_if_no_model_versions_found);
+  source_config.set_servable_versions_always_present(
+      options_.servable_versions_always_present);
   for (const auto& model : config.model_config_list().config()) {
     LOG(INFO) << " (Re-)adding model: " << model.name();
     FileSystemStoragePathSourceConfig::ServableToMonitor* servable =
@@ -586,14 +605,22 @@ Status ServerCore::CreateStoragePathRoutes(
 Status ServerCore::CreateStoragePathSource(
     const FileSystemStoragePathSourceConfig& config,
     Target<StoragePath>* target,
-    std::unique_ptr<FileSystemStoragePathSource>* source) const {
+    std::unique_ptr<FileSystemStoragePathSource>* source,
+    std::unique_ptr<PrefixStoragePathSourceAdapter>* prefix_source_adapter) {
   const Status status = FileSystemStoragePathSource::Create(config, source);
   if (!status.ok()) {
     VLOG(1) << "Unable to create FileSystemStoragePathSource due to: "
             << status;
     return status;
   }
-  ConnectSourceToTarget(source->get(), target);
+  if (options_.storage_path_prefix.empty()) {
+    ConnectSourceToTarget(source->get(), target);
+  } else {
+    *prefix_source_adapter = absl::make_unique<PrefixStoragePathSourceAdapter>(
+        options_.storage_path_prefix);
+    ConnectSourceToTarget(source->get(), prefix_source_adapter->get());
+    ConnectSourceToTarget(prefix_source_adapter->get(), target);
+  }
   return Status::OK();
 }
 
@@ -770,6 +797,10 @@ Status ServerCore::GetModelVersionForLabel(const string& model_name,
                                            const string& label,
                                            int64* version) const {
   mutex_lock l(model_labels_to_versions_mu_);
+  if (model_labels_to_versions_ == nullptr) {
+    return errors::Unavailable(
+        strings::StrCat("Model labels does not init yet.", label));
+  }
   auto version_map_it = model_labels_to_versions_->find(model_name);
   if (version_map_it != model_labels_to_versions_->end()) {
     const std::map<string, int64>& version_map = version_map_it->second;

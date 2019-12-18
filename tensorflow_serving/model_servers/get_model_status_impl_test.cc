@@ -19,7 +19,6 @@ limitations under the License.
 #include <gtest/gtest.h>
 #include "tensorflow/cc/saved_model/loader.h"
 #include "tensorflow/cc/saved_model/signature_constants.h"
-#include "tensorflow/contrib/session_bundle/session_bundle.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow_serving/apis/model.pb.h"
 #include "tensorflow_serving/core/availability_preserving_policy.h"
@@ -46,9 +45,11 @@ constexpr int kNonexistentModelVersion = 125;
 
 class GetModelStatusImplTest : public ::testing::Test {
  public:
-  static void SetUpTestCase() { TF_ASSERT_OK(CreateServerCore(&server_core_)); }
+  static void SetUpTestSuite() {
+    TF_ASSERT_OK(CreateServerCore(&server_core_));
+  }
 
-  static void TearDownTestCase() { server_core_.reset(); }
+  static void TearDownTestSuite() { server_core_.reset(); }
 
  protected:
   static Status CreateServerCore(std::unique_ptr<ServerCore>* server_core) {

@@ -22,7 +22,7 @@ cc_library(
     name = "streaming_batch_scheduler",
     srcs = ["streaming_batch_scheduler.cc"],
     hdrs = ["streaming_batch_scheduler.h"],
-    visibility = ["//visibility:public"],
+    visibility = ["//visibility:private"],
     deps = [
         ":batch_scheduler_retrier",
         "//tensorflow_serving/util:optional",
@@ -65,6 +65,7 @@ cc_library(
         "@org_tensorflow//tensorflow/core:tensorflow",
         "@org_tensorflow//tensorflow/core/kernels/batching_util:basic_batch_scheduler",
         "@org_tensorflow//tensorflow/core/kernels/batching_util:batch_scheduler",
+        "@org_tensorflow//tensorflow/core/profiler/lib:traceme",
     ],
 )
 
@@ -84,7 +85,6 @@ cc_test(
         "//tensorflow_serving/test_util",
         "@org_tensorflow//tensorflow/cc/saved_model:loader",
         "@org_tensorflow//tensorflow/cc/saved_model:tag_constants",
-        "@org_tensorflow//tensorflow/contrib/session_bundle",
         "@org_tensorflow//tensorflow/core:core_cpu",
         "@org_tensorflow//tensorflow/core:framework",
         "@org_tensorflow//tensorflow/core:lib",

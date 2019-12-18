@@ -23,6 +23,7 @@ limitations under the License.
 #include <utility>
 
 #include "google/protobuf/any.pb.h"
+#include "absl/base/macros.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/cpu_info.h"
 #include "tensorflow/core/platform/macros.h"
@@ -34,11 +35,13 @@ limitations under the License.
 #include "tensorflow_serving/config/platform_config.pb.h"
 #include "tensorflow_serving/core/aspired_versions_manager.h"
 #include "tensorflow_serving/core/dynamic_source_router.h"
+#include "tensorflow_serving/core/prefix_storage_path_source_adapter.h"
 #include "tensorflow_serving/core/servable_state_monitor.h"
 #include "tensorflow_serving/core/server_request_logger.h"
 #include "tensorflow_serving/core/source.h"
 #include "tensorflow_serving/core/source_adapter.h"
 #include "tensorflow_serving/core/storage_path.h"
+#include "tensorflow_serving/servables/tensorflow/predict_util.h"
 #include "tensorflow_serving/sources/storage_path/file_system_storage_path_source.h"
 #include "tensorflow_serving/util/event_bus.h"
 #include "tensorflow_serving/util/optional.h"
@@ -153,8 +156,16 @@ class ServerCore : public Manager {
 
     // If set to true, the server will fail to start up (or fail a config
     // reload) if, for any configured model, no versions of the model are found
-    // in the file system under the model's base path.
+    // in the filesystem under the model's base path.
+    ABSL_DEPRECATED("Use servable_versions_always_present.")
     bool fail_if_no_model_versions_found = false;
+
+    // If set to true, the server will fail to start up (or fail a config
+    // reload) if, for any configured model, no versions of the model are found
+    // in the filesystem under the model's base path. In addition, if the
+    // filesystem polling finds no servables under the base path for a
+    // configured model, it will do nothing, rather than unloading all versions.
+    bool servable_versions_always_present = false;
 
     // Logger used for logging requests hitting the server.
     std::unique_ptr<ServerRequestLogger> server_request_logger;
@@ -165,6 +176,20 @@ class ServerCore : public Manager {
     // Callback to be called just before a servable is to be loaded. This will
     // called on the same manager load thread which starts the load.
     PreLoadHook pre_load_hook;
+
+    // Whether to allow assigning unused version labels to models that are not
+    // available yet.
+    bool allow_version_labels_for_unavailable_models = false;
+
+    // In a predict handler, this option specifies how to serialize tensors
+    // (e.g: as proto fields or as proto content).
+    // Serialize as proto fields by default, for backward compatibility.
+    internal::PredictResponseTensorSerializationOption
+        predict_response_tensor_serialization_option =
+            internal::PredictResponseTensorSerializationOption::kAsProtoField;
+
+    // The prefix to append to the file system storage paths.
+    std::string storage_path_prefix;
   };
 
   virtual ~ServerCore() = default;
@@ -230,9 +255,15 @@ class ServerCore : public Manager {
   /// Writes the log for the particular request, response and metadata, if we
   /// decide to sample it and if request-logging was configured for the
   /// particular model.
-  Status Log(const google::protobuf::Message& request, const google::protobuf::Message& response,
-             const LogMetadata& log_metadata) {
+  virtual Status Log(const google::protobuf::Message& request,
+                     const google::protobuf::Message& response,
+                     const LogMetadata& log_metadata) {
     return options_.server_request_logger->Log(request, response, log_metadata);
+  }
+
+  internal::PredictResponseTensorSerializationOption
+  predict_response_tensor_serialization_option() const {
+    return options_.predict_response_tensor_serialization_option;
   }
 
  protected:
@@ -280,12 +311,13 @@ class ServerCore : public Manager {
   Status WaitUntilModelsAvailable(const std::set<string>& models,
                                   ServableStateMonitor* monitor);
 
-  // Creates a FileSystemStoragePathSource and connects it to the supplied
-  // target.
+  // Creates a FileSystemStoragePathSource and an optional
+  // PrefixStoragePathSourceAdapter, and connects them to the supplied target.
   Status CreateStoragePathSource(
       const FileSystemStoragePathSourceConfig& config,
       Target<StoragePath>* target,
-      std::unique_ptr<FileSystemStoragePathSource>* source) const
+      std::unique_ptr<FileSystemStoragePathSource>* source,
+      std::unique_ptr<PrefixStoragePathSourceAdapter>* prefix_source_adapter)
       EXCLUSIVE_LOCKS_REQUIRED(config_mu_);
 
   // The source adapters to deploy, to handle the configured platforms as well
@@ -338,7 +370,10 @@ class ServerCore : public Manager {
       EXCLUSIVE_LOCKS_REQUIRED(config_mu_);
 
   // Updates 'model_labels_to_versions_' based on 'config_'. Throws an error if
-  // requesting to assign a label to a version not in state kAvailable.
+  // requesting to assign an existing label to a version not in state
+  // kAvailable. For a new version label, it can be assigned to a version that
+  // is not in state kAvailable yet if
+  // allow_version_labels_for_unavailable_models is true.
   Status UpdateModelVersionLabelMap() EXCLUSIVE_LOCKS_REQUIRED(config_mu_)
       LOCKS_EXCLUDED(model_labels_to_versions_mu_);
 

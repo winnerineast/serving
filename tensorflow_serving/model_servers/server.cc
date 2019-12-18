@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow_serving/model_servers/server.h"
 
 #include <unistd.h>
+
 #include <iostream>
 #include <memory>
 #include <utility>
@@ -30,13 +31,17 @@ limitations under the License.
 #include "absl/memory/memory.h"
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/cc/saved_model/tag_constants.h"
+#include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/profiler/rpc/profiler_service_impl.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow_serving/config/model_server_config.pb.h"
 #include "tensorflow_serving/config/monitoring_config.pb.h"
+#include "tensorflow_serving/config/platform_config.pb.h"
 #include "tensorflow_serving/config/ssl_config.pb.h"
 #include "tensorflow_serving/core/availability_preserving_policy.h"
 #include "tensorflow_serving/model_servers/grpc_status_util.h"
@@ -51,16 +56,15 @@ namespace main {
 
 namespace {
 
-tensorflow::Status ParseProtoTextFile(const string& file,
-                                      google::protobuf::Message* message) {
+template <typename ProtoType>
+tensorflow::Status ParseProtoTextFile(const string& file, ProtoType* proto) {
   std::unique_ptr<tensorflow::ReadOnlyMemoryRegion> file_data;
   TF_RETURN_IF_ERROR(
       tensorflow::Env::Default()->NewReadOnlyMemoryRegionFromFile(file,
                                                                   &file_data));
   string file_data_str(static_cast<const char*>(file_data->data()),
                        file_data->length());
-  if (tensorflow::protobuf::TextFormat::ParseFromString(file_data_str,
-                                                        message)) {
+  if (tensorflow::protobuf::TextFormat::ParseFromString(file_data_str, proto)) {
     return tensorflow::Status::OK();
   } else {
     return tensorflow::errors::InvalidArgument("Invalid protobuf file: '", file,
@@ -91,12 +95,6 @@ ModelServerConfig BuildSingleModelConfig(const string& model_name,
   return config;
 }
 
-template <typename ProtoType>
-ProtoType ReadProtoFromFile(const string& file) {
-  ProtoType proto;
-  TF_CHECK_OK(ParseProtoTextFile(file, &proto));
-  return proto;
-}
 
 // gRPC Channel Arguments to be passed from command line to gRPC ServerBuilder.
 struct GrpcChannelArgument {
@@ -119,21 +117,6 @@ std::vector<GrpcChannelArgument> parseGrpcChannelArgs(
   return result;
 }
 
-// Parses an ascii PlatformConfigMap protobuf from 'file'.
-tensorflow::serving::PlatformConfigMap ParsePlatformConfigMap(
-    const string& file) {
-  tensorflow::serving::PlatformConfigMap platform_config_map;
-  TF_CHECK_OK(ParseProtoTextFile(file, &platform_config_map));
-  return platform_config_map;
-}
-
-// Parses an ascii SSLConfig protobuf from 'file'.
-SSLConfig ParseSSLConfig(const string& file) {
-  SSLConfig ssl_config;
-  TF_CHECK_OK(ParseProtoTextFile(file, &ssl_config));
-  return ssl_config;
-}
-
 // If 'ssl_config_file' is non-empty, build secure server credentials otherwise
 // insecure channel
 std::shared_ptr<::grpc::ServerCredentials>
@@ -142,7 +125,8 @@ BuildServerCredentialsFromSSLConfigFile(const string& ssl_config_file) {
     return ::grpc::InsecureServerCredentials();
   }
 
-  SSLConfig ssl_config = ParseSSLConfig(ssl_config_file);
+  SSLConfig ssl_config;
+  TF_CHECK_OK(ParseProtoTextFile<SSLConfig>(ssl_config_file, &ssl_config));
 
   ::grpc::SslServerCredentialsOptions ssl_ops(
       ssl_config.client_verify()
@@ -169,7 +153,30 @@ Server::Options::Options()
     : model_name("default"),
       saved_model_tags(tensorflow::kSavedModelTagServe) {}
 
-Server::~Server() { WaitForTermination(); }
+Server::~Server() {
+  // Note: Deletion of 'fs_polling_thread_' will block until our underlying
+  // thread closure stops. Hence, destruction of this object will not proceed
+  // until the thread has terminated.
+  fs_config_polling_thread_.reset();
+  WaitForTermination();
+}
+
+void Server::PollFilesystemAndReloadConfig(const string& config_file_path) {
+  ModelServerConfig config;
+  const Status read_status =
+      ParseProtoTextFile<ModelServerConfig>(config_file_path, &config);
+  if (!read_status.ok()) {
+    LOG(ERROR) << "Failed to read ModelServerConfig file: "
+               << read_status.error_message();
+    return;
+  }
+
+  const Status reload_status = server_core_->ReloadConfig(config);
+  if (!reload_status.ok()) {
+    LOG(ERROR) << "PollFilesystemAndReloadConfig failed to ReloadConfig: "
+               << reload_status.error_message();
+  }
+}
 
 Status Server::BuildAndStart(const Options& server_options) {
   const bool use_saved_model = true;
@@ -194,8 +201,8 @@ Status Server::BuildAndStart(const Options& server_options) {
     options.model_server_config = BuildSingleModelConfig(
         server_options.model_name, server_options.model_base_path);
   } else {
-    options.model_server_config =
-        ReadProtoFromFile<ModelServerConfig>(server_options.model_config_file);
+    TF_RETURN_IF_ERROR(ParseProtoTextFile<ModelServerConfig>(
+        server_options.model_config_file, &options.model_server_config));
   }
 
   if (server_options.platform_config_file.empty()) {
@@ -208,8 +215,8 @@ Status Server::BuildAndStart(const Options& server_options) {
         batching_parameters->mutable_thread_pool_name()->set_value(
             "model_server_batch_threads");
       } else {
-        *batching_parameters = ReadProtoFromFile<BatchingParameters>(
-            server_options.batching_parameters_file);
+        TF_RETURN_IF_ERROR(ParseProtoTextFile<BatchingParameters>(
+            server_options.batching_parameters_file, batching_parameters));
       }
     } else if (!server_options.batching_parameters_file.empty()) {
       return errors::InvalidArgument(
@@ -221,12 +228,32 @@ Status Server::BuildAndStart(const Options& server_options) {
         ->mutable_gpu_options()
         ->set_per_process_gpu_memory_fraction(
             server_options.per_process_gpu_memory_fraction);
-    session_bundle_config.mutable_session_config()
+
+    if (server_options.tensorflow_intra_op_parallelism > 0 &&
+        server_options.tensorflow_inter_op_parallelism > 0 &&
+        server_options.tensorflow_session_parallelism > 0){
+        return errors::InvalidArgument("Either configure "
+          "server_options.tensorflow_session_parallelism "
+          "or (server_options.tensorflow_intra_op_parallelism, "
+          "server_options.tensorflow_inter_op_parallelism) separately. "
+          "You cannot configure all.");
+    } else if (server_options.tensorflow_intra_op_parallelism > 0 ||
+        server_options.tensorflow_inter_op_parallelism > 0){
+            session_bundle_config.mutable_session_config()
+            ->set_intra_op_parallelism_threads(
+                server_options.tensorflow_intra_op_parallelism);
+            session_bundle_config.mutable_session_config()
+            ->set_inter_op_parallelism_threads(
+                server_options.tensorflow_inter_op_parallelism);
+    } else {
+        session_bundle_config.mutable_session_config()
         ->set_intra_op_parallelism_threads(
             server_options.tensorflow_session_parallelism);
-    session_bundle_config.mutable_session_config()
+        session_bundle_config.mutable_session_config()
         ->set_inter_op_parallelism_threads(
             server_options.tensorflow_session_parallelism);
+    }
+
     const std::vector<string> tags =
         tensorflow::str_util::Split(server_options.saved_model_tags, ",");
     for (const string& tag : tags) {
@@ -234,11 +261,19 @@ Status Server::BuildAndStart(const Options& server_options) {
     }
     session_bundle_config.set_enable_model_warmup(
         server_options.enable_model_warmup);
+    if (server_options.num_request_iterations_for_warmup > 0) {
+      session_bundle_config.mutable_model_warmup_options()
+          ->mutable_num_request_iterations()
+          ->set_value(server_options.num_request_iterations_for_warmup);
+    }
+    session_bundle_config.set_remove_unused_fields_from_bundle_metagraph(
+        server_options.remove_unused_fields_from_bundle_metagraph);
+    session_bundle_config.set_use_tflite_model(server_options.use_tflite_model);
     options.platform_config_map = CreateTensorFlowPlatformConfigMap(
         session_bundle_config, use_saved_model);
   } else {
-    options.platform_config_map =
-        ParsePlatformConfigMap(server_options.platform_config_file);
+    TF_RETURN_IF_ERROR(ParseProtoTextFile<PlatformConfigMap>(
+        server_options.platform_config_file, &options.platform_config_map));
   }
 
   options.custom_model_config_loader = &LoadCustomModelConfig;
@@ -250,21 +285,58 @@ Status Server::BuildAndStart(const Options& server_options) {
   options.file_system_poll_wait_seconds =
       server_options.file_system_poll_wait_seconds;
   options.flush_filesystem_caches = server_options.flush_filesystem_caches;
+  options.allow_version_labels_for_unavailable_models =
+      server_options.allow_version_labels_for_unavailable_models;
 
   TF_RETURN_IF_ERROR(ServerCore::Create(std::move(options), &server_core_));
+
+  // Model config polling thread must be started after the call to
+  // ServerCore::Create() to prevent config reload being done concurrently from
+  // Create() and the poll thread.
+  if (server_options.fs_model_config_poll_wait_seconds > 0 &&
+      !server_options.model_config_file.empty()) {
+    PeriodicFunction::Options pf_options;
+    pf_options.thread_name_prefix = "Server_fs_model_config_poll_thread";
+
+    const string model_config_file = server_options.model_config_file;
+    fs_config_polling_thread_.reset(new PeriodicFunction(
+        [this, model_config_file] {
+          this->PollFilesystemAndReloadConfig(model_config_file);
+        },
+        server_options.fs_model_config_poll_wait_seconds *
+            tensorflow::EnvTime::kSecondsToMicros,
+        pf_options));
+  }
 
   // 0.0.0.0" is the way to listen on localhost in gRPC.
   const string server_address =
       "0.0.0.0:" + std::to_string(server_options.grpc_port);
   model_service_ = absl::make_unique<ModelServiceImpl>(server_core_.get());
-  prediction_service_ = absl::make_unique<PredictionServiceImpl>(
-      server_core_.get(), use_saved_model);
+
+  PredictionServiceImpl::Options predict_server_options;
+  predict_server_options.server_core = server_core_.get();
+  predict_server_options.use_saved_model = use_saved_model;
+  predict_server_options.enforce_session_run_timeout =
+      server_options.enforce_session_run_timeout;
+  prediction_service_ =
+      absl::make_unique<PredictionServiceImpl>(predict_server_options);
+
+  profiler_service_ = tensorflow::CreateProfilerService();
+
   ::grpc::ServerBuilder builder;
   builder.AddListeningPort(
       server_address,
       BuildServerCredentialsFromSSLConfigFile(server_options.ssl_config_file));
+  // If defined, listen to a UNIX socket for gRPC.
+  if (!server_options.grpc_socket_path.empty()) {
+    const string grpc_socket_uri = "unix:" + server_options.grpc_socket_path;
+    builder.AddListeningPort(grpc_socket_uri,
+                             BuildServerCredentialsFromSSLConfigFile(
+                                 server_options.ssl_config_file));
+  }
   builder.RegisterService(model_service_.get());
   builder.RegisterService(prediction_service_.get());
+  builder.RegisterService(profiler_service_.get());
   builder.SetMaxMessageSize(tensorflow::kint32max);
   const std::vector<GrpcChannelArgument> channel_arguments =
       parseGrpcChannelArgs(server_options.grpc_channel_arguments);
@@ -284,6 +356,10 @@ Status Server::BuildAndStart(const Options& server_options) {
     return errors::InvalidArgument("Failed to BuildAndStart gRPC server");
   }
   LOG(INFO) << "Running gRPC ModelServer at " << server_address << " ...";
+  if (!server_options.grpc_socket_path.empty()) {
+    LOG(INFO) << "Running gRPC ModelServer at UNIX socket "
+              << server_options.grpc_socket_path << " ...";
+  }
 
   if (server_options.http_port != 0) {
     if (server_options.http_port != server_options.grpc_port) {
@@ -291,8 +367,8 @@ Status Server::BuildAndStart(const Options& server_options) {
           "localhost:" + std::to_string(server_options.http_port);
       MonitoringConfig monitoring_config;
       if (!server_options.monitoring_config_file.empty()) {
-        monitoring_config = ReadProtoFromFile<MonitoringConfig>(
-            server_options.monitoring_config_file);
+        TF_RETURN_IF_ERROR(ParseProtoTextFile<MonitoringConfig>(
+            server_options.monitoring_config_file, &monitoring_config));
       }
       http_server_ = CreateAndStartHttpServer(
           server_options.http_port, server_options.http_num_threads,

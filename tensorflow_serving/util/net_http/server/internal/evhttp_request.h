@@ -20,6 +20,7 @@ limitations under the License.
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "tensorflow_serving/util/net_http/server/internal/server_support.h"
 #include "tensorflow_serving/util/net_http/server/public/httpserver_interface.h"
@@ -54,6 +55,7 @@ struct ParsedEvRequest {
   // TODO(wenboz): do we need escaped path for dispatching requests?
   // evhttp_uridecode(path)
   const char* path = nullptr;  // owned by uri
+  std::string path_and_query;
 
   evkeyvalq* headers = nullptr;  // owned by raw request
 };
@@ -114,9 +116,12 @@ class EvHTTPRequest final : public ServerRequestInterface {
   bool NeedUncompressGzipContent();
 
   // Must set uncompressed_input to nullptr if uncompression is failed
-  void UncompressGzipContent(void* input, size_t input_size,
-                             void** uncompressed_input,
-                             size_t* uncompressed_input_size);
+  void UncompressGzipBody(void* input, size_t input_size,
+                          void** uncompressed_input,
+                          size_t* uncompressed_input_size);
+
+  std::unique_ptr<char[], BlockDeleter> ReadRequestGzipBytes(
+      evbuffer* input_buf, int64_t* size);
 
   ServerSupport* server_;
 
